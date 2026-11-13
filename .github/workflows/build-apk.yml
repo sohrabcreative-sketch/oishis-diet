@@ -1,0 +1,108 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['.github/keystore/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # A fixed signing key is created once and kept in the repo, so every
+      # new APK can be installed over the previous one without uninstalling.
+      - name: Signing key
+        run: |
+          if [ ! -f .github/keystore/debug.keystore ]; then
+            mkdir -p .github/keystore
+            keytool -genkeypair -keystore .github/keystore/debug.keystore \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/keystore/debug.keystore
+            git commit -m "Add APK signing key"
+            git push
+          fi
+          mkdir -p ~/.android
+          cp .github/keystore/debug.keystore ~/.android/debug.keystore
+
+      - name: Prepare web files
+        run: |
+          mkdir -p build/www
+          cp -r index.html *.js *.css *.svg *.webmanifest fonts build/www/
+          cd build
+          cat > package.json <<'EOF'
+          { "name": "oishis-diet", "version": "1.0.0", "private": true }
+          EOF
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.sohrabhossain.oishisdiet",
+            "appName": "Oishis Diet",
+            "webDir": "www",
+            "plugins": { "LocalNotifications": { "iconColor": "#0A84FF" } }
+          }
+          EOF
+          npm install @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/local-notifications@8
+          cp node_modules/@capacitor/core/dist/capacitor.js www/capacitor.js
+          sed -i 's#<script type="module" src="app.js"></script>#<script src="capacitor.js"></script>\n<script type="module" src="app.js"></script>#' www/index.html
+          grep -q 'capacitor.js' www/index.html
+
+      - name: Create Android project
+        working-directory: build
+        run: |
+          npx cap add android
+          sed -i "s/Oishis Diet/Oishi\\\\'s Diet/g" android/app/src/main/res/values/strings.xml
+          cat android/app/src/main/res/values/strings.xml
+          sed -i "s/versionCode 1$/versionCode ${{ github.run_number }}/" android/app/build.gradle
+
+      - name: App icon
+        working-directory: build
+        continue-on-error: true
+        run: |
+          npm install --no-save @capacitor/assets sharp
+          mkdir -p assets
+          node -e "require('sharp')('www/icon.svg',{density:300}).resize(1024,1024).png().toFile('assets/logo.png').then(()=>console.log('icon ok'))"
+          npx capacitor-assets generate --android --iconBackgroundColor '#0a78f0' --iconBackgroundColorDark '#0a78f0' --splashBackgroundColor '#e9f4fb' --splashBackgroundColorDark '#080d18'
+
+      - name: Build APK
+        working-directory: build
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/OishisDiet.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OishisDiet-apk
+          path: OishisDiet.apk
+
+      - name: Publish download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete apk --yes --cleanup-tag || true
+          sleep 3
+          gh release create apk OishisDiet.apk --title "Oishi's Diet APK (build ${{ github.run_number }})" --notes "Download OishisDiet.apk on your Android phone and open it to install." --latest
