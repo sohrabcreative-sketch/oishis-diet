@@ -1,7 +1,9 @@
 // রিমাইন্ডার: APK-তে Capacitor LocalNotifications (অ্যাপ বন্ধ থাকলেও বাজে),
 // ব্রাউজারে অ্যাপ খোলা থাকা অবস্থায় Notification API।
 const native = () => !!window.Capacitor?.isNativePlatform?.();
-const LN = () => window.Capacitor.Plugins.LocalNotifications;
+// APK বিল্ডের সময় capacitor.js যোগ হয়, সেটিই registerPlugin দেয়।
+let ln;
+const LN = () => (ln ??= window.Capacitor.Plugins.LocalNotifications || window.Capacitor.registerPlugin('LocalNotifications'));
 const FIRED = 'jk.fired';
 
 export const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
